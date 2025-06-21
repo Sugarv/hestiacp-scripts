@@ -47,8 +47,32 @@ This script creates a clone of an existing WordPress site on a new subdomain. It
 ./create_subdomain.sh <username> <desired-subdomain-url>
 ```
 
+### [`copy_domain.sh`](copy_domain.sh)
+
+This script copies an existing WordPress site from one domain to another within the same HestiaCP user account. It ensures that all files are transferred and that database URLs are updated correctly and safely using `WP-CLI`'s serialization-aware `search-replace` command.
+
+**Key Features:**
+*   Requires HestiaCP username, source domain, and destination domain as arguments.
+*   Checks for `WP-CLI` availability at the beginning of the script.
+*   Adds the new destination domain using `v-add-web-domain`.
+*   Verifies the existence of the source domain's `wp-config.php`.
+*   Extracts database details from the source WordPress site's `wp-config.php`.
+*   Dumps the source database.
+*   Creates a new database for the destination domain.
+*   Imports the source database dump into the new destination database.
+*   Copies WordPress files from the source domain's `public_html` to the destination domain's `public_html`.
+*   Updates the `wp-config.php` file for the destination domain to point to its dedicated database.
+*   Updates database URLs within the new destination domain's database using `wp search-replace` (serialization-safe).
+*   Clears WP-CLI cache.
+*   Cleans up temporary SQL dump files.
+
+**Usage:**
+```bash
+./copy_domain.sh <username> <source-domain> <destination-domain>
+```
+
 ## Requirements
 
 *   **HestiaCP:** These scripts are designed for use with HestiaCP.
 *   **WP-CLI:** The scripts heavily rely on `WP-CLI` for safe database operations. Ensure `WP-CLI` is installed and accessible in your system's PATH. If not, you can download it from [https://wp-cli.org/#install](https://wp-cli.org/#install).
-*   **MySQL Root Credentials:** The `create_subdomain.sh` script requires access to MySQL root credentials via `/root/.mysql.cnf`.
+*   **MySQL Root Credentials:** The `create_subdomain.sh` and `copy_domain.sh` scripts require access to MySQL root credentials via `/root/.mysql.cnf`.
