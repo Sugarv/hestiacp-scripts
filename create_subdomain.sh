@@ -1,13 +1,16 @@
 #!/bin/bash
 # Create a Wordpress site clone on a given subdomain
 # (useful for testing, migrations etc)
-# Usage: create_subdomain.sh <username> <desired-subdomain-url>
+# Usage: ./create_subdomain.sh <username> <desired-subdomain-url>
 
-# Check if WP-CLI is available at the beginning
-if ! command -v wp &> /dev/null
-then
-    echo "❌ Error: WP-CLI is not installed or not in your PATH. Please install it to proceed with serialization-safe URL replacement."
-    echo "You can download it from: https://wp-cli.org/#install"
+# --- CONFIGURATION & CHECKS ---
+
+# 1. Fix PATH so Hestia commands work
+export PATH=$PATH:/usr/local/hestia/bin
+
+# Check for WP-CLI
+if ! command -v wp &> /dev/null; then
+    echo "❌ Error: WP-CLI is not installed."
     exit 1
 fi
 
@@ -56,14 +59,20 @@ else
     fi
 fi
 
+# 2. Smartly derive parent domain
+# Assumes input is "sub.domain.com" -> Parent is "domain.com"
 # Paths and domain info
-DOMAIN_DIR="/home/${USER}/web"
 DOMAIN=$(echo "$SUBDOMAIN_URL" | cut -d. -f2-)
 SUBDOMAIN_PART=$(echo "$SUBDOMAIN_URL" | cut -d. -f1)
-WP_CONFIG_PATH="${DOMAIN_DIR}/${DOMAIN}/public_html/wp-config.php"
 
-if [ ! -f "$WP_CONFIG_PATH" ]; then
-    echo "WordPress configuration file not found: $WP_CONFIG_PATH"
+DOMAIN_DIR="/home/${USER}/web"
+SOURCE_ROOT="${DOMAIN_DIR}/${DOMAIN}/public_html"
+DESTINATION_ROOT="${DOMAIN_DIR}/${SUBDOMAIN_URL}/public_html"
+
+# Verify source exists
+if [ ! -d "$SOURCE_ROOT" ]; then
+    echo "❌ Error: Parent domain directory not found: $SOURCE_ROOT"
+    echo "   Ensure the parent domain is '$DOMAIN' and exists in Hestia."
     exit 1
 fi
 
@@ -71,14 +80,19 @@ fi
 DB_NAME=$(grep -oP "define\s*\(\s*'DB_NAME'\s*,\s*'\K[^']+" "$WP_CONFIG_PATH")
 DB_USER=$(grep -oP "define\s*\(\s*'DB_USER'\s*,\s*'\K[^']+" "$WP_CONFIG_PATH")
 DB_PASS=$(grep -oP "define\s*\(\s*'DB_PASSWORD'\s*,\s*'\K[^']+" "$WP_CONFIG_PATH")
+# --- STEP 1: READ SOURCE CONFIG ---
 
-if [ -z "$DB_NAME" ] || [ -z "$DB_USER" ] || [ -z "$DB_PASS" ]; then
-    echo "Failed to extract database details from wp-config.php: $WP_CONFIG_PATH"
+echo "Reading source configuration..."
+# 3. Use WP-CLI to read config (Safer than grep)
+DB_NAME=$(wp config get DB_NAME --path="$SOURCE_ROOT" --allow-root)
+# We don't strictly need the old DB User/Pass because we are creating new ones
+
+if [ -z "$DB_NAME" ]; then
+    echo "❌ Failed to read DB credentials from source."
     exit 1
 fi
 
-echo "DB: ${DB_NAME}"
-echo "DB_USER: ${DB_USER}"
+# --- STEP 2: SETUP SUBDOMAIN & DB ---
 
 # Dump the original database
 DUMP_FILE="/tmp/${DB_NAME}.sql"
@@ -86,15 +100,27 @@ mysqldump $MYSQL_DEFAULTS "$DB_NAME" > "$DUMP_FILE"
 if [ $? -ne 0 ]; then
     echo "Failed to dump database: $DB_NAME"
     exit 1
+echo "Creating subdomain: $SUBDOMAIN_URL"
+v-add-web-domain "$USER" "$SUBDOMAIN_URL"
+
+# 4. Remove default index.html immediately so it doesn't block WP
+rm -f "${DESTINATION_ROOT}/index.html" "${DESTINATION_ROOT}/robots.txt"
+
+# 5. Fix DNS: Auto-detect IP
+USER_IP=$(v-list-user "$USER" json | grep '"IP":' | cut -d'"' -f4)
+if [ -z "$USER_IP" ]; then
+    echo "⚠️  Could not auto-detect User IP. Skipping DNS."
+else
+    echo "Adding DNS with IP: $USER_IP"
+    v-add-dns-domain "$USER" "$SUBDOMAIN_URL" "$USER_IP"
 fi
 
-# Create new staging database
-STAGING_DB_NAME="${USER}_${SUBDOMAIN_PART}"
-v-add-database "$USER" "${SUBDOMAIN_PART}" "$SUBDOMAIN_PART" "$DB_PASS"
-if [ $? -ne 0 ]; then
-    echo "Failed to create staging database"
-    exit 1
-fi
+# 6. Database Setup
+# Truncate subdomain part to ensure DB name isn't too long for MySQL
+SHORT_SUB=$(echo "$SUBDOMAIN_PART" | cut -c1-8)
+NEW_DB_NAME="${SHORT_SUB}_db"
+NEW_DB_USER="${SHORT_SUB}_user"
+NEW_DB_PASS=$(openssl rand -base64 12) # Generate fresh secure password
 
 # Import original database dump into staging database
 mysql $MYSQL_DEFAULTS "$STAGING_DB_NAME" < "$DUMP_FILE"
@@ -102,14 +128,14 @@ if [ $? -ne 0 ]; then
     echo "Failed to import SQL file into staging database: $STAGING_DB_NAME"
     exit 1
 fi
+echo "Creating staging database: ${USER}_${NEW_DB_NAME}..."
+v-add-database "$USER" "$NEW_DB_NAME" "$NEW_DB_USER" "$NEW_DB_PASS"
 
-# Set up the subdomain files
-SUBDOMAIN_DIR="${DOMAIN_DIR}/${SUBDOMAIN_URL}/public_html"
-mkdir -p "$SUBDOMAIN_DIR"
-rsync -a "${DOMAIN_DIR}/${DOMAIN}/public_html/" "$SUBDOMAIN_DIR"
+# --- STEP 3: MIGRATE DATA ---
 
-# Delete index.html (WP uses index.php)
-rm "$SUBDOMAIN_DIR/index.html"
+echo "Cloning files (rsync)..."
+mkdir -p "$DESTINATION_ROOT"
+rsync -a --exclude 'wp-config.php' "${SOURCE_ROOT}/" "$DESTINATION_ROOT/"
 
 # Update wp-config.php for the subdomain
 SUBDOMAIN_WP_CONFIG="$SUBDOMAIN_DIR/wp-config.php"
@@ -130,33 +156,38 @@ if [ $? -ne 0 ]; then
     echo "❌ Error: Failed to update DB_PASSWORD in wp-config.php"
     exit 1
 fi
+echo "Dumping and Importing Database..."
+DUMP_FILE="/tmp/${USER}_${DB_NAME}.sql"
 
-# Perform search-replace operations using WP-CLI for serialization safety
-echo "Updating database URLs using WP-CLI..."
-WP_PATH="${DOMAIN_DIR}/${SUBDOMAIN_URL}/public_html"
-
-# Note: wp search-replace is serialization-aware by default.
-# The --precise flag can be added for more aggressive (but slower) serialization handling
-# if issues arise with complex or malformed serialized data.
-wp search-replace "https://$DOMAIN" "https://$SUBDOMAIN_URL" --path="$WP_PATH" --skip-columns=guid --allow-root
-if [ $? -ne 0 ]; then
-    echo "❌ Error: WP-CLI search-replace failed for HTTPS URLs."
-    exit 1
-fi
-wp search-replace "http://$DOMAIN" "http://$SUBDOMAIN_URL" --path="$WP_PATH" --skip-columns=guid --allow-root
-if [ $? -ne 0 ]; then
-    echo "❌ Error: WP-CLI search-replace failed for HTTP URLs."
-    exit 1
-fi
-
-# Clear WP-CLI cache
-wp cache flush --path="$WP_PATH" --allow-root
-if [ $? -ne 0 ]; then
-    echo "❌ Error: WP-CLI cache flush failed."
-    exit 1
-fi
-
-# Cleanup
+mysqldump --defaults-extra-file=/root/.mysql.cnf "${DB_NAME}" > "$DUMP_FILE"
+mysql --defaults-extra-file=/root/.mysql.cnf "${USER}_${NEW_DB_NAME}" < "$DUMP_FILE"
 rm "$DUMP_FILE"
 
-echo "WordPress site successfully copied to subdomain: $SUBDOMAIN_URL"
+# --- STEP 4: CONFIGURE NEW SITE ---
+
+echo "Generating new wp-config.php..."
+cp "${SOURCE_ROOT}/wp-config.php" "${DESTINATION_ROOT}/wp-config.php"
+
+# 7. CRITICAL FIX: Update wp-config to use the NEW DB User, not the old one
+sed -i "s/define( *'DB_NAME', *'.*' *);/define( 'DB_NAME', '${USER}_${NEW_DB_NAME}' );/" "${DESTINATION_ROOT}/wp-config.php"
+sed -i "s/define( *'DB_USER', *'.*' *);/define( 'DB_USER', '${USER}_${NEW_DB_USER}' );/" "${DESTINATION_ROOT}/wp-config.php"
+sed -i "s/define( *'DB_PASSWORD', *'.*' *);/define( 'DB_PASSWORD', '${NEW_DB_PASS}' );/" "${DESTINATION_ROOT}/wp-config.php"
+
+# --- STEP 5: SEARCH & REPLACE ---
+
+echo "Running Search & Replace..."
+# 8. Run as root (to bypass shell limits) but fix permissions later
+wp search-replace "https://$DOMAIN" "https://$SUBDOMAIN_URL" --path="$DESTINATION_ROOT" --skip-columns=guid --allow-root
+wp search-replace "http://$DOMAIN" "http://$SUBDOMAIN_URL" --path="$DESTINATION_ROOT" --skip-columns=guid --allow-root
+
+echo "Flushing Cache..."
+wp cache flush --path="$DESTINATION_ROOT" --allow-root
+
+# 9. CRITICAL FIX: Restore file ownership to the user
+echo "Fixing Permissions..."
+chown -R "$USER:$USER" "$DESTINATION_ROOT"
+
+echo "✅ Success! Staging created at http://${SUBDOMAIN_URL}"
+echo "   Database: ${USER}_${NEW_DB_NAME}"
+echo "   User: ${USER}_${NEW_DB_USER}"
+echo "   Pass: ${NEW_DB_PASS}"
