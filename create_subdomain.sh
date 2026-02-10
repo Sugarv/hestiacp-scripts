@@ -39,8 +39,13 @@ fi
 
 # Try to add DNS domain - detect user IP first
 echo "Reading source configuration..."
-USER_CONFIG="/home/${USER}/web/$(echo "$SUBDOMAIN_URL" | cut -d. -f2-)/web.conf"
-USER_IP=$(grep "^IP=" "$USER_CONFIG" 2>/dev/null | cut -d= -f2 | tr -d "'\"")
+DOMAIN=$(echo "$SUBDOMAIN_URL" | cut -d. -f2-)
+APACHE_CONFIG="/home/${USER}/conf/web/${DOMAIN}/apache2.conf"
+
+USER_IP=""
+if [ -f "$APACHE_CONFIG" ]; then
+    USER_IP=$(grep -oP "VirtualHost\s+\K[\d.]+" "$APACHE_CONFIG" | head -1)
+fi
 
 if [ -z "$USER_IP" ]; then
     echo "⚠️  Could not auto-detect User IP. Skipping DNS."
