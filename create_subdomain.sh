@@ -21,26 +21,34 @@ fi
 USER="$1"
 SUBDOMAIN_URL="$2"
 
-# File with MySQL root credentials
-MYSQL_CRED_FILE="/root/.mysql.cnf"
+# File with MySQL credentials
+MYSQL_CRED_FILE="/root/.my.cnf"
 
-if [ ! -f "$MYSQL_CRED_FILE" ]; then
-    echo "MySQL credentials file not found: $MYSQL_CRED_FILE"
-    exit 1
+# Check if credentials file exists, if not continue without it (MySQL may use other auth methods)
+MYSQL_DEFAULTS=""
+if [ -f "$MYSQL_CRED_FILE" ]; then
+    MYSQL_DEFAULTS="--defaults-extra-file=$MYSQL_CRED_FILE"
 fi
 
-# Add the subdomain web 
+# Add the subdomain web
 v-add-web-domain "$USER" "$SUBDOMAIN_URL"
 if [ $? -ne 0 ]; then
     echo "Failed to add web domain for subdomain: $SUBDOMAIN_URL"
     exit 1
 fi
 
-# Add the subdomain DNS 
-v-add-dns-domain "$USER" "$SUBDOMAIN_URL"
-if [ $? -ne 0 ]; then
-    echo "Failed to add DNS domain for subdomain: $SUBDOMAIN_URL"
-    exit 1
+# Try to add DNS domain - detect user IP first
+echo "Reading source configuration..."
+USER_CONFIG="/home/${USER}/web/$(echo "$SUBDOMAIN_URL" | cut -d. -f2-)/web.conf"
+USER_IP=$(grep "^IP=" "$USER_CONFIG" 2>/dev/null | cut -d= -f2 | tr -d "'\"")
+
+if [ -z "$USER_IP" ]; then
+    echo "⚠️  Could not auto-detect User IP. Skipping DNS."
+else
+    v-add-dns-domain "$USER" "$SUBDOMAIN_URL" "$USER_IP"
+    if [ $? -ne 0 ]; then
+        echo "⚠️  Warning: Failed to add DNS domain for subdomain: $SUBDOMAIN_URL (continuing anyway)"
+    fi
 fi
 
 # Paths and domain info
@@ -55,9 +63,9 @@ if [ ! -f "$WP_CONFIG_PATH" ]; then
 fi
 
 # Extract database details from wp-config.php
-DB_NAME=$(grep -oP "define\( 'DB_NAME',\s*'\K[^']+" "$WP_CONFIG_PATH")
-DB_USER=$(grep -oP "define\( 'DB_USER',\s*'\K[^']+" "$WP_CONFIG_PATH")
-DB_PASS=$(grep -oP "define\( 'DB_PASSWORD',\s*'\K[^']+" "$WP_CONFIG_PATH")
+DB_NAME=$(grep -oP "define\s*\(\s*'DB_NAME'\s*,\s*'\K[^']+" "$WP_CONFIG_PATH")
+DB_USER=$(grep -oP "define\s*\(\s*'DB_USER'\s*,\s*'\K[^']+" "$WP_CONFIG_PATH")
+DB_PASS=$(grep -oP "define\s*\(\s*'DB_PASSWORD'\s*,\s*'\K[^']+" "$WP_CONFIG_PATH")
 
 if [ -z "$DB_NAME" ] || [ -z "$DB_USER" ] || [ -z "$DB_PASS" ]; then
     echo "Failed to extract database details from wp-config.php: $WP_CONFIG_PATH"
@@ -69,7 +77,7 @@ echo "DB_USER: ${DB_USER}"
 
 # Dump the original database
 DUMP_FILE="/tmp/${DB_NAME}.sql"
-mysqldump --defaults-extra-file="$MYSQL_CRED_FILE" "$DB_NAME" > "$DUMP_FILE"
+mysqldump $MYSQL_DEFAULTS "$DB_NAME" > "$DUMP_FILE"
 if [ $? -ne 0 ]; then
     echo "Failed to dump database: $DB_NAME"
     exit 1
@@ -84,7 +92,7 @@ if [ $? -ne 0 ]; then
 fi
 
 # Import original database dump into staging database
-mysql --defaults-extra-file="$MYSQL_CRED_FILE" "$STAGING_DB_NAME" < "$DUMP_FILE"
+mysql $MYSQL_DEFAULTS "$STAGING_DB_NAME" < "$DUMP_FILE"
 if [ $? -ne 0 ]; then
     echo "Failed to import SQL file into staging database: $STAGING_DB_NAME"
     exit 1
@@ -100,9 +108,23 @@ rm "$SUBDOMAIN_DIR/index.html"
 
 # Update wp-config.php for the subdomain
 SUBDOMAIN_WP_CONFIG="$SUBDOMAIN_DIR/wp-config.php"
-sed -i "s/define( 'DB_NAME',.*/define( 'DB_NAME', '${STAGING_DB_NAME}');/" "$SUBDOMAIN_WP_CONFIG"
-sed -i "s/define( 'DB_USER',.*/define( 'DB_USER', '${DB_USER}');/" "$SUBDOMAIN_WP_CONFIG"
-sed -i "s/define( 'DB_PASSWORD',.*/define( 'DB_PASSWORD', '${DB_PASS}');/" "$SUBDOMAIN_WP_CONFIG"
+sed -i "s|define( 'DB_NAME',.*|define( 'DB_NAME', '${STAGING_DB_NAME}');|" "$SUBDOMAIN_WP_CONFIG"
+if [ $? -ne 0 ]; then
+    echo "❌ Error: Failed to update DB_NAME in wp-config.php"
+    exit 1
+fi
+
+sed -i "s|define( 'DB_USER',.*|define( 'DB_USER', '${DB_USER}');|" "$SUBDOMAIN_WP_CONFIG"
+if [ $? -ne 0 ]; then
+    echo "❌ Error: Failed to update DB_USER in wp-config.php"
+    exit 1
+fi
+
+sed -i "s|define( 'DB_PASSWORD',.*|define( 'DB_PASSWORD', '${DB_PASS}');|" "$SUBDOMAIN_WP_CONFIG"
+if [ $? -ne 0 ]; then
+    echo "❌ Error: Failed to update DB_PASSWORD in wp-config.php"
+    exit 1
+fi
 
 # Perform search-replace operations using WP-CLI for serialization safety
 echo "Updating database URLs using WP-CLI..."
