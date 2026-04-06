@@ -31,6 +31,15 @@ Copies an existing WordPress site from one domain to another under the same Hest
 ./copy_domain.sh <username> <source-domain> <destination-domain>
 ```
 
+### [`block_ai_bots.sh`](block_ai_bots.sh)
+
+Automatically adds a block of `User-agent` and `Disallow: /` rules to the `robots.txt` file of all `public_html` directories within a HestiaCP environment. This prevents various AI and scraping bots from accessing the website content. It creates a `robots.txt` with default rules if one doesn't exist and ensures correct file ownership.
+
+**Usage:**
+```bash
+./block_ai_bots.sh
+```
+
 ## Requirements
 
 *   **HestiaCP:** Designed for HestiaCP environments.
