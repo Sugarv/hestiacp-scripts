@@ -1,0 +1,40 @@
+=========================================================
+HestiaCP Global Apache Rule: Block Bots Server-Wide
+=========================================================
+This method applies an Apache .htaccess-style block globally to all 
+HestiaCP user directories. It stops specific bad bots (like aggressive 
+crawlers) before they can execute PHP or query your WordPress database.
+
+STEP 1: Create the Global Configuration File
+---------------------------------------------------------
+1. SSH into your server as root.
+2. Run this command to create a new Apache conf file:
+   nano /etc/apache2/conf-available/blockbots.conf
+
+STEP 2: Add the Block Rules
+---------------------------------------------------------
+1. Paste the following configuration inside the file:
+
+<Directory /home/*/web/*/public_html>
+    RewriteEngine On
+    RewriteCond %{HTTP_USER_AGENT} meta-externalagent [NC]
+    RewriteRule .* - [F,L]
+</Directory>
+
+* Note: To block multiple bots, use the pipe (|) separator:
+  RewriteCond %{HTTP_USER_AGENT} (meta-externalagent|badbot|scraper) [NC]
+
+2. Save and exit (Ctrl+O, Enter, Ctrl+X).
+
+STEP 3: Enable the Configuration & Restart Apache
+---------------------------------------------------------
+1. Enable the new configuration:
+   a2enconf blockbots
+
+2. Restart Apache to apply the changes:
+   systemctl restart apache2
+
+---------------------------------------------------------
+How to Verify:
+Check your domain access logs. You should now see a 
+"403 Forbidden" status code next to the blocked User-Agent.

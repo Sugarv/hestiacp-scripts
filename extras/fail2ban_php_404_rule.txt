@@ -1,0 +1,56 @@
+=========================================================
+HestiaCP Fail2Ban Rule: Block PHP Vulnerability Scanners
+=========================================================
+This custom rule automatically bans bots and scanners that repeatedly trigger 404 Not Found errors on .php files (like backdoor scripts or old plugins).
+
+STEP 1: Create the Filter
+---------------------------------------------------------
+1. Run this command to create a new filter file:
+   nano /etc/fail2ban/filter.d/nginx-404-php.conf
+
+2. Paste the following configuration inside:
+[Definition]
+failregex = ^<HOST> .* "(GET|POST|HEAD) .*\.php.*" 404 .*$
+ignoreregex =
+
+3. Save and exit (Ctrl+O, Enter, Ctrl+X).
+
+
+STEP 2: Create the Jail
+---------------------------------------------------------
+1. Open your Fail2Ban local jail configuration:
+   nano /etc/fail2ban/jail.local
+
+2. Scroll to the very bottom of the file and paste this block:
+[nginx-404-php]
+enabled  = true
+port     = http,https
+filter   = nginx-404-php
+logpath  = /var/log/apache2/domains/*.log
+           /var/log/nginx/domains/*.log
+maxretry = 5
+findtime = 600
+bantime  = 86400
+
+3. Save and exit (Ctrl+O, Enter, Ctrl+X).
+
+
+STEP 3: Restart Fail2Ban
+---------------------------------------------------------
+Apply the new rules by restarting the service:
+   systemctl restart fail2ban
+
+
+STEP 4: Useful Commands for Monitoring
+---------------------------------------------------------
+Check live status of the jail and see currently banned IPs:
+   fail2ban-client status nginx-404-php
+
+View ban/unban activity in the logs:
+   grep "nginx-404-php" /var/log/fail2ban.log
+
+Watch the Fail2Ban logs in real-time:
+   tail -f /var/log/fail2ban.log
+
+Manually unban an IP (replace <IP_ADDRESS> with the actual IP):
+   fail2ban-client set nginx-404-php unbanip <IP_ADDRESS>
