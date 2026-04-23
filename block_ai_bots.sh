@@ -6,8 +6,6 @@ User-agent: GPTBot
 Disallow: /
 User-agent: ChatGPT-User
 Disallow: /
-User-agent: Google-Extended
-Disallow: /
 User-agent: ClaudeBot
 Disallow: /
 User-agent: anthropic-ai
